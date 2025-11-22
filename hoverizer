@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hoverizer</title>
+    <!-- Load Tailwind CSS --><script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter Font (substituting for Google Sans Regular) --><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400&display=swap" rel="stylesheet">
+    <style>
+        /* Custom styles for better aesthetics and cursor */
+        body {
+            font-family: 'Inter', sans-serif; /* Using Inter as a modern sans-serif equivalent to Google Sans */
+            background-color: #f7f9fc;
+        }
+        #canvas-container {
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 0 15px 0 rgba(0, 0, 0, 0.07);
+        }
+        /* Custom cursor to indicate the distortion radius */
+        #mainCanvas {
+            cursor: none;
+            border-radius: 0.5rem;
+            background-color: #e2e8f0; /* Placeholder background */
+        }
+        /* Style for the range inputs */
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #4f46e5;
+            cursor: pointer;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8 min-h-screen flex items-center justify-center">
+
+    <div class="w-full max-w-4xl bg-white p-6 md:p-10 rounded-xl shadow-2xl">
+        <!-- Title Updated: font-normal (Regular weight) -->
+        <h1 class="text-3xl font-normal text-gray-800 mb-2">Hoverizer</h1>
+        <p class="text-gray-500 mb-6 font-normal">Upload an image and move your cursor over the canvas to reveal a fun geometric distortion effect.</p>
+
+        <!-- Image Upload and Controls --><div class="mb-6 flex flex-col gap-4">
+            <!-- File Input Updated: file:font-normal -->
+            <input type="file" id="imageInput" accept="image/*" class="flex-grow file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-normal file:bg-indigo-50 file:text-indigo-600 hover:file:bg-indigo-100 cursor-pointer p-2 border border-gray-300 rounded-lg">
+            
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-4 items-center">
+                
+                <!-- 1. Radius Slider (Label Updated: font-normal) -->
+                <div class="flex flex-col space-y-1">
+                    <label for="ditherRadius" class="text-sm font-normal text-gray-600">Radius (<span id="radiusValue">80</span>px):</label>
+                    <input type="range" id="ditherRadius" min="40" max="500" value="80" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-sm">
+                </div>
+
+                <!-- 2. Distortion Strength Slider (Label Updated: font-normal) -->
+                <div class="flex flex-col space-y-1">
+                    <label for="distortionStrength" class="text-sm font-normal text-gray-600">Strength (<span id="strengthValue">0.50</span>):</label>
+                    <input type="range" id="distortionStrength" min="0.1" max="1" value="0.5" step="0.01" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-sm">
+                </div>
+                
+                <!-- 3. Distortion Type Dropdown (Label Updated: font-normal) -->
+                <div class="flex flex-col space-y-1">
+                    <label for="distortionType" class="text-sm font-normal text-gray-600">Distortion Type:</label>
+                    <select id="distortionType" class="w-full h-10 border border-gray-300 rounded-lg p-2 text-sm text-gray-700 font-normal focus:ring-indigo-500 focus:border-indigo-500">
+                        <option value="swirl">Swirl</option>
+                        <option value="pinch">Pinch (Zoom Out)</option>
+                        <option value="bulge">Bulge (Zoom In)</option>
+                        <option value="ripple">Ripple (Radial Wave)</option>
+                        <option value="spin">Spin (Angular Wobble)</option>
+                        <option value="vortex">Vortex (Tight Swirl)</option>
+                        <option value="invert">Invert (Edge to Center)</option>
+                        <option value="wave">Wave (Horizontal Sine)</option>
+                    </select>
+                </div>
+
+                <!-- Placeholder for layout consistency --><div class="hidden md:block"></div> 
+
+            </div>
+        </div>
+
+        <!-- Canvas Container --><div id="canvas-container" class="relative w-full overflow-hidden rounded-xl">
+            <canvas id="mainCanvas" class="w-full block"></canvas>
+            
+            <!-- Loading and Status Messages (Updated: font-normal) -->
+            <div id="statusMessage" class="absolute inset-0 flex items-center justify-center bg-gray-100/90 text-gray-500 font-normal text-lg rounded-xl transition duration-300">
+                Please upload an image to start.
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Firebase SDKs --><script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, setDoc, doc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --------------------------------------------------------
+        // Firebase Setup: Safely accessing the environment globals
+        // --------------------------------------------------------
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfigString = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
+        const firebaseConfig = JSON.parse(firebaseConfigString);
+
+        let db, auth, userId;
+
+        /**
+         * Initializes Firebase and authenticates the user.
+         */
+        async function initializeFirebase() {
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.warn("Firebase config is missing. Skipping initialization.");
+                return;
+            }
+
+            try {
+                setLogLevel('debug');
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Authenticate user
+                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : undefined;
+                
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                
+                userId = auth.currentUser?.uid || crypto.randomUUID();
+                console.log("Firebase initialized. User ID:", userId);
+
+            } catch (error) {
+                console.error("Error initializing or signing in to Firebase:", error);
+            }
+        }
+
+        // Call the initialization function
+        initializeFirebase();
+
+        // --------------------------------------------------------
+        // CORE APPLICATION LOGIC (Canvas and Distortion)
+        // --------------------------------------------------------
+
+        const canvas = document.getElementById('mainCanvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const imageInput = document.getElementById('imageInput');
+        const statusMessage = document.getElementById('statusMessage');
+        
+        // Sliders and Dropdowns
+        const radiusInput = document.getElementById('ditherRadius');
+        const radiusValueSpan = document.getElementById('radiusValue');
+        const distortionTypeSelect = document.getElementById('distortionType');
+        const distortionStrengthInput = document.getElementById('distortionStrength');
+        const strengthValueSpan = document.getElementById('strengthValue');
+
+
+        let originalImage = null; // Stores the HTML Image element
+        let originalImageData = null; // Stores the original pixel data (Uint8ClampedArray)
+        
+        // Distortion Settings
+        let ditherRadius = parseInt(radiusInput.value);
+        let distortionType = distortionTypeSelect.value;
+        let distortionStrength = parseFloat(distortionStrengthInput.value);
+        // const FEATHER_WIDTH_RATIO = 0.25; // No longer needed for hard edge
+
+        // Stores last known mouse position for redraws (in client coordinates)
+        let lastMousePos = { x: 0, y: 0 }; 
+        
+        // --------------------------------------------------------
+        // Utility Functions
+        // --------------------------------------------------------
+
+        /**
+         * Safely gets a color from the original pixel array using nearest neighbor sampling.
+         * @param {number} srcX Source X coordinate (can be float).
+         * @param {number} srcY Source Y coordinate (can be float).
+         * @param {number} width Canvas width.
+         * @param {number} height Canvas height.
+         * @param {Uint8ClampedArray} data Original image pixel data.
+         * @returns {number[]} Array of [R, G, B, A] color components.
+         */
+        function getPixelColor(srcX, srcY, width, height, data) {
+            // Use Math.floor for nearest neighbor sampling
+            srcX = Math.floor(srcX);
+            srcY = Math.floor(srcY);
+
+            // Clamp coordinates to stay within bounds
+            if (srcX < 0 || srcX >= width || srcY < 0 || srcY >= height) {
+                // If coordinates are outside, return the original pixel color at the edge (clamping)
+                srcX = Math.max(0, Math.min(width - 1, srcX));
+                srcY = Math.max(0, Math.min(height - 1, srcY));
+            }
+            
+            const i = (srcY * width + srcX) * 4;
+            return [data[i], data[i + 1], data[i + 2], data[i + 3]];
+        }
+        
+        // --------------------------------------------------------
+        // Distortion Mapping Functions (Map destination (x,y) back to source (x',y'))
+        // All functions take destination coordinates (dx, dy) relative to center, and return 
+        // source coordinates (dx', dy') relative to center.
+        // --------------------------------------------------------
+
+        /** Swirl/Twirl Map: Rotates source coordinates based on distance from center. */
+        function swirlMap(dx, dy, r, theta, radius, strength) {
+            // Rotation angle decreases with distance (1 at center, 0 at radius edge)
+            const rotationAngle = strength * (1 - r / radius) * Math.PI * 2;
+            const newTheta = theta - rotationAngle; // Subtract to get the source pixel
+            
+            return {
+                dx: r * Math.cos(newTheta),
+                dy: r * Math.sin(newTheta)
+            };
+        }
+
+        /** Pinch Map (Zoom Out): Pulls source coordinates towards the center. */
+        function pinchMap(dx, dy, r, theta, radius, strength) {
+            const normalizedDistance = r / radius;
+            
+            // Contract factor decreases distance towards center.
+            const contractFactor = 1 - strength * normalizedDistance;
+            
+            const newR = r * contractFactor;
+            
+            return {
+                dx: newR * Math.cos(theta),
+                dy: newR * Math.sin(theta)
+            };
+        }
+
+        /** Bulge Map (Zoom In): Pushes source coordinates away from the center. */
+        function bulgeMap(dx, dy, r, theta, radius, strength) {
+            const normalizedDistance = r / radius;
+
+            // Expand factor is 1 + strength * (1 - normalized distance)
+            const expandFactor = 1 + strength * (1 - normalizedDistance);
+
+            // We divide the original radius by the expansion factor to find the source pixel
+            const newR = r / expandFactor; 
+            
+            return {
+                dx: newR * Math.cos(theta),
+                dy: newR * Math.sin(theta)
+            };
+        }
+
+        /** Ripple Map (Radial Wave): Adds sinusoidal variation to the radial distance. */
+        function rippleMap(dx, dy, r, theta, radius, strength) {
+            const normalizedR = r / radius;
+            const waves = 10; // Number of ripples/waves in the radius
+            
+            // Radial distance modified by sine wave, fading out at the edge
+            const wave = Math.sin(normalizedR * waves * Math.PI) * (1 - normalizedR) * strength * 0.5;
+            const newR = r * (1 + wave);
+
+            return {
+                dx: newR * Math.cos(theta),
+                dy: newR * Math.sin(theta)
+            };
+        }
+        
+        /** Spin Map (Angular Wobble): Adds sinusoidal variation to the angle. */
+        function spinMap(dx, dy, r, theta, radius, strength) {
+            const rotations = 4; // Number of peaks/valleys around the circle
+            
+            // Angular distortion is strongest near the edge
+            const factor = (r / radius) * strength * 0.5; 
+            const angularShift = Math.sin(theta * rotations) * factor;
+            const newTheta = theta + angularShift;
+
+            return {
+                dx: r * Math.cos(newTheta),
+                dy: r * Math.sin(newTheta)
+            };
+        }
+
+        /** Vortex Map (Tight Swirl): Stronger, exponentially decaying swirl effect. */
+        function vortexMap(dx, dy, r, theta, radius, strength) {
+            const normalizedR = r / radius;
+            
+            // Use an exponential decay to emphasize the center vortex effect
+            const rotationFactor = strength * 0.5; 
+            const decay = Math.pow(1 - normalizedR, 2); 
+            const rotationAngle = rotationFactor * decay * Math.PI * 4; // Max rotation
+            
+            const newTheta = theta - rotationAngle; 
+            
+            return {
+                dx: r * Math.cos(newTheta),
+                dy: r * Math.sin(newTheta)
+            };
+        }
+        
+        /** Invert Map (Edge to Center): Flips the radial distance. */
+        function invertMap(dx, dy, r, theta, radius, strength) {
+            const normalizedR = r / radius;
+            
+            // Inverted normalized distance: 0 becomes 1, 1 becomes 0.
+            const newNormalizedR = 1.0 - normalizedR;
+            
+            // Blend between original r and inverted radius based on strength
+            const newR = r * (1 - strength) + (radius * newNormalizedR) * strength;
+
+            return {
+                dx: newR * Math.cos(theta),
+                dy: newR * Math.sin(theta)
+            };
+        }
+        
+        /** Wave Map (Horizontal Sine): Shifts source X position sinusoidally based on Y position. */
+        function waveMap(dx, dy, r, theta, radius, strength) {
+            const waves = 5; // Number of wave cycles across the radius (vertically)
+            const waveAmplitude = strength * radius * 0.1; // Max 10% of radius shift
+            
+            // Calculate sinusoidal offset for X based on the relative Y position
+            const offset = waveAmplitude * Math.sin(dy * waves * Math.PI / radius);
+            
+            const newDx = dx - offset;
+            
+            return {
+                dx: newDx,
+                dy: dy
+            };
+        }
+
+
+        // --------------------------------------------------------
+        // Image Loading
+        // --------------------------------------------------------
+
+        imageInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            statusMessage.textContent = 'Loading image...';
+            statusMessage.classList.remove('hidden');
+            originalImage = new Image();
+            
+            originalImage.onload = () => {
+                // Set canvas dimensions to match the image
+                canvas.width = originalImage.width;
+                canvas.height = originalImage.height;
+
+                // Draw the original image to get pixel data
+                ctx.drawImage(originalImage, 0, 0);
+
+                // Store original image data (needed for blending)
+                originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+                
+                // Show the original image initially
+                statusMessage.classList.add('hidden');
+                
+                // Trigger an initial draw if mouse is already over the canvas
+                canvas.dispatchEvent(new MouseEvent('mousemove', {
+                    clientX: lastMousePos.x,
+                    clientY: lastMousePos.y,
+                    bubbles: true
+                }));
+            };
+
+            originalImage.onerror = () => {
+                statusMessage.textContent = 'Error loading image.';
+                console.error("Failed to load image.");
+            };
+
+            originalImage.src = URL.createObjectURL(file);
+        });
+
+
+        // --------------------------------------------------------
+        // Interactive Hover Effect (Hard Edge)
+        // --------------------------------------------------------
+
+        const cursorIndicator = document.createElement('div');
+        cursorIndicator.id = 'cursorIndicator';
+        Object.assign(cursorIndicator.style, {
+            position: 'absolute',
+            width: `${ditherRadius * 2}px`,
+            height: `${ditherRadius * 2}px`,
+            borderRadius: '50%',
+            backgroundColor: 'rgba(255, 255, 255, 0.1)',
+            border: '2px dashed rgba(255, 255, 255, 0.5)',
+            pointerEvents: 'none',
+            zIndex: '10',
+            opacity: '0',
+            transition: 'opacity 0.2s, transform 0s'
+        });
+        document.getElementById('canvas-container').appendChild(cursorIndicator);
+
+
+        /**
+         * Redraws the canvas by blending original and distorted data based on mouse position.
+         * Now with a hard edge for the distortion area.
+         * @param {number} mouseX Canvas X coordinate (pixel space).
+         * @param {number} mouseY Canvas Y coordinate (pixel space).
+         */
+        function blendImage(mouseX, mouseY) {
+            if (!originalImageData || !originalImage) return;
+
+            const width = canvas.width;
+            const height = canvas.height;
+            const size = width * height * 4;
+            const newImageData = new Uint8ClampedArray(size);
+            
+            const outerRadiusSq = ditherRadius * ditherRadius; // Squared radius for efficient distance check
+            
+            // Map distortion type to the corresponding function
+            const distortionMap = {
+                'swirl': swirlMap,
+                'pinch': pinchMap,
+                'bulge': bulgeMap,
+                'ripple': rippleMap,
+                'spin': spinMap,
+                'vortex': vortexMap,
+                'invert': invertMap,
+                'wave': waveMap
+            }[distortionType];
+
+            if (!distortionMap) return;
+
+            // Loop through all pixels in the image data
+            for (let i = 0; i < size; i += 4) {
+                const pixelIndex = i / 4;
+                const x = pixelIndex % width;
+                const y = Math.floor(pixelIndex / width);
+
+                // Calculate distance from the mouse center (squared for performance)
+                const dx = x - mouseX; // x distance from center
+                const dy = y - mouseY; // y distance from center
+                const distSq = dx * dx + dy * dy;
+
+                // If within the distortion radius, apply the effect
+                if (distSq < outerRadiusSq) {
+                    const distance = Math.sqrt(distSq);
+                    const theta = Math.atan2(dy, dx);
+                    
+                    // Map destination (x, y) back to source (srcX, srcY)
+                    const mappedNormalized = distortionMap(dx, dy, distance, theta, ditherRadius, distortionStrength);
+                    
+                    const srcX = mappedNormalized.dx + mouseX;
+                    const srcY = mappedNormalized.dy + mouseY;
+                    
+                    // Get the color from the original image data at the mapped coordinate
+                    const distortedColor = getPixelColor(srcX, srcY, width, height, originalImageData);
+                    
+                    // Apply the distorted color directly (no blending needed for hard edge)
+                    newImageData[i] = distortedColor[0];
+                    newImageData[i + 1] = distortedColor[1];
+                    newImageData[i + 2] = distortedColor[2];
+                    newImageData[i + 3] = distortedColor[3]; // Keep alpha
+                } else {
+                    // Outside the radius: use original color directly
+                    newImageData[i] = originalImageData[i];
+                    newImageData[i + 1] = originalImageData[i + 1];
+                    newImageData[i + 2] = originalImageData[i + 2];
+                    newImageData[i + 3] = originalImageData[i + 3];
+                }
+            }
+
+            // Put the blended image data back onto the canvas
+            ctx.putImageData(new ImageData(newImageData, width, height), 0, 0);
+        }
+
+        /**
+         * Updates the custom cursor indicator position and size.
+         */
+        function updateCursor(x, y) {
+            
+            // Calculate cursor position relative to the container
+            const indicatorX = x + canvas.offsetLeft - ditherRadius;
+            const indicatorY = y + canvas.offsetTop - ditherRadius;
+
+            Object.assign(cursorIndicator.style, {
+                width: `${ditherRadius * 2}px`,
+                height: `${ditherRadius * 2}px`,
+                transform: `translate(${indicatorX}px, ${indicatorY}px)`,
+                opacity: '1'
+            });
+        }
+
+
+        // --------------------------------------------------------
+        // Event Listeners for Interaction
+        // --------------------------------------------------------
+        
+        canvas.addEventListener('mousemove', (e) => {
+            if (!originalImage) return;
+
+            // 1. Get mouse position relative to the canvas
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            // 2. Scale mouse position to actual pixel resolution
+            const canvasX = Math.floor(mouseX * (canvas.width / rect.width));
+            const canvasY = Math.floor(mouseY * (canvas.height / rect.height));
+
+            lastMousePos = { x: e.clientX, y: e.clientY };
+
+            // 3. Apply blend effect
+            blendImage(canvasX, canvasY);
+            
+            // 4. Update cursor visualization
+            updateCursor(mouseX, mouseY);
+        });
+
+        // Restore original image on mouse out
+        canvas.addEventListener('mouseout', () => {
+            if (originalImage && originalImageData) {
+                // To restore the original image, we need to create a new ImageData object
+                // from the original pixel data and put it back.
+                const width = canvas.width;
+                const height = canvas.height;
+                ctx.putImageData(new ImageData(originalImageData, width, height), 0, 0);
+            }
+            cursorIndicator.style.opacity = '0';
+        });
+
+        // Update slider values and trigger updates
+        radiusInput.addEventListener('input', () => {
+            ditherRadius = parseInt(radiusInput.value);
+            radiusValueSpan.textContent = ditherRadius;
+            // Update cursor indicator size instantly
+            Object.assign(cursorIndicator.style, {
+                width: `${ditherRadius * 2}px`,
+                height: `${ditherRadius * 2}px`,
+            });
+            // Trigger a synthetic mousemove event to update the drawing instantly
+            canvas.dispatchEvent(new MouseEvent('mousemove', {
+                clientX: lastMousePos.x,
+                clientY: lastMousePos.y,
+                bubbles: true
+            }));
+        });
+        
+        distortionTypeSelect.addEventListener('change', (e) => {
+            distortionType = e.target.value;
+            // Trigger redraw
+            canvas.dispatchEvent(new MouseEvent('mousemove', {
+                clientX: lastMousePos.x,
+                clientY: lastMousePos.y,
+                bubbles: true
+            }));
+        });
+
+        distortionStrengthInput.addEventListener('input', (e) => {
+            distortionStrength = parseFloat(e.target.value);
+            strengthValueSpan.textContent = distortionStrength.toFixed(2);
+            // Trigger redraw
+            canvas.dispatchEvent(new MouseEvent('mousemove', {
+                clientX: lastMousePos.x,
+                clientY: lastMousePos.y,
+                bubbles: true
+            }));
+        });
+
+
+    </script>
+</body>
+</html>
